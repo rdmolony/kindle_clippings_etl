@@ -10,6 +10,9 @@ Building on the `Kindle Clippings library`_...
 - **Load** the resulting text into files of quotes for each individual book
 
 
+**Note:**  At present this script is only implemented for OSX, please extend for Linux and Windows by 
+adding the default path to "My Clippings.txt".  On OSX this is: /Volumes/Kindle/documents/My Clippings.txt
+
 Usage
 -----
 
