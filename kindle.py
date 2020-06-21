@@ -131,6 +131,9 @@ def _save_clippings_to_files(
     directory: Path = Path("output"),
 ) -> None:
 
+    if not directory.exists:
+        os.mkdir(directory) 
+
     if len(os.listdir(directory)) != 0:
         rmtree(directory)
         os.mkdir(directory)
@@ -165,7 +168,6 @@ def _etl_clippings_to_folder():
 
 
 if __name__ == '__main__':
-    # main()
     flow = _etl_clippings_to_folder()
 
     with raise_on_exception():
