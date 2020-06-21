@@ -1,94 +1,172 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-import collections
-import json
 import os
 import re
+from collections import defaultdict
+from pathlib import Path
+from shutil import copyfile, rmtree
+from sys import platform
+from typing import List
 
-BOUNDARY = u"==========\r\n"
-DATA_FILE = u"clips.json"
-OUTPUT_DIR = u"output"
+import prefect
+from pipeop import pipes
+from prefect import Flow, task
+from prefect.utilities.debug import raise_on_exception
+
+# Tasks
+# *****
+
+def _get_path_to_kindle_clippings() -> Path:
+
+    if platform == 'darwin': # Mac / OSX 
+        path_to_clippings = Path(r"/Volumes/Kindle/documents/My Clippings.txt")
+    
+    elif platform == 'win32': # Windows
+        raise NotImplementedError(
+           r"Please replace this with absolute path to 'My Clippings.txt' for Windows..."
+        )
+
+    elif platform == "linux" or platform == "linux2":
+        raise NotImplementedError(
+           r"Please replace this with absolute path to 'My Clippings.txt' for Linux..."
+        )
+       
+    return path_to_clippings
 
 
-def get_sections(filename):
+def _copy_clippings_from_kindle_to_cwd(clippings_local: Path, clippings_kindle: Path) -> None:
+
+    if clippings_kindle.exists():
+        copyfile(clippings_kindle, clippings_local)
+    else:
+        raise Exception(
+        "Cannot find Kindle!\n"
+        f"Ensure Kindle is plugged in and 'My Clippings.txt' is saved at {clippings_kindle}"
+    )
+
+
+@task
+def _extract_kindle_clippings(clippings_local: Path = Path(u"My Clippings.txt")) -> Path:
+
+    logger = prefect.context.get("logger")
+    
+    if not clippings_local.exists():
+        kindle_clippings = _get_path_to_kindle_clippings()
+        _copy_clippings_from_kindle_to_cwd(clippings_local, clippings_kindle)
+    else:
+        logger.info("Clippings already exists locally.  Delete local copy to extract again...")
+        
+    return clippings_local
+
+@task
+def _load_clippings_to_string(filename: Path):
+
     with open(filename, 'rb') as f:
         content = f.read().decode('utf-8')
-    content = content.replace(u'\ufeff', u'')
-    return content.split(BOUNDARY)
+    
+    return content
 
 
-def get_clip(section):
-    clip = {}
+def _split_clippings_string_into_list(raw_clippings: str) -> List[str]:
 
-    lines = [l for l in section.split(u'\r\n') if l]
-    if len(lines) != 3:
-        return
-
-    clip['book'] = lines[0]
-    match = re.search(r'(\d+)-\d+', lines[1])
-    if not match:
-        return
-    position = match.group(1)
-
-    clip['position'] = int(position)
-    clip['content'] = lines[2]
-
-    return clip
+    return (
+        raw_clippings.replace(u"\r", "")
+        .replace(u"\n\n", "\n")
+        .replace(u"\ufeff", "")
+        .split("==========")
+    )
 
 
-def export_txt(clips):
-    """
-    Export each book's clips to single text.
-    """
-    for book in clips:
-        lines = []
-        for pos in sorted(clips[book]):
-            lines.append(clips[book][pos].encode('utf-8'))
+def _link_books_with_quotes(clippings: List[str]) -> defaultdict(list):
 
-        filename = os.path.join(OUTPUT_DIR, u"%s.md" % book)
-        with open(filename, 'wb') as f:
-            f.write("\n\n---\n\n".join(lines))
+    books_with_quotes = defaultdict(list)
 
+    for clipping in clippings:
+        split_clipping = clipping.strip(u"\n").split(u"\n")
 
-def load_clips():
-    """
-    Load previous clips from DATA_FILE
-    """
-    try:
-        with open(DATA_FILE, 'rb') as f:
-            return json.load(f)
-    except (IOError, ValueError):
-        return {}
+        book = split_clipping[0]
+
+        # NOTE: don't save empty quotes (i.e. len==2)
+        if len(split_clipping) == 3: 
+            quote = split_clipping[2]
+
+            books_with_quotes[book].append(quote)
+
+    return books_with_quotes
 
 
-def save_clips(clips):
-    """
-    Save new clips to DATA_FILE
-    """
-    with open(DATA_FILE, 'wb') as f:
-        json.dump(clips, f)
+def _link_books_with_quotes_and_location(clippings: List[str]) -> defaultdict(list):
+
+    books_with_quotes_and_location = defaultdict(list) 
+
+    location_regex = re.compile(r"(location \d+-\d+)")
+
+    for clipping in clippings:
+        split_clipping = clipping.strip(u"\n").split(u"\n")
+    
+        book = split_clipping[0]
+
+        # NOTE: don't save empty quotes (i.e. len==2)
+        if len(split_clipping) == 3: 
+            location = location_regex.findall(split_clipping[1])[0]
+            quote = split_clipping[2]
+
+            books_with_quotes_and_location[book].append([quote, location])
+
+    return books_with_quotes_and_location
 
 
-def main():
-    # load old clips
-    clips = collections.defaultdict(dict)
-    clips.update(load_clips())
+@task
+def _transform_clippings_into_defaultdict(raw_clippings: str):
 
-    # extract clips
-    sections = get_sections(u'My Clippings.txt')
-    for section in sections:
-        clip = get_clip(section)
-        if clip:
-            clips[clip['book']][str(clip['position'])] = clip['content']
+    clippings = _split_clippings_string_into_list(raw_clippings)
 
-    # remove key with empty value
-    clips = {k: v for k, v in clips.items() if v}
+    return _link_books_with_quotes(clippings)
 
-    # save/export clips
-    save_clips(clips)
-    export_txt(clips)
+
+@task
+def _save_clippings_to_files(
+    clippings_by_book: defaultdict(list), 
+    directory: Path = Path("output"),
+) -> None:
+
+    if len(os.listdir(directory)) != 0:
+        rmtree(directory)
+        os.mkdir(directory)
+
+    for book, quote in clippings_by_book.items():
+
+        filename = directory / f"{book}.txt"
+        with filename.open('a', encoding='utf-8') as f:
+            quotes = "\n\n---\n\n".join(quote)
+            f.write(quotes)
+
+
+
+# Flow
+# ****
+
+@pipes
+def _etl_clippings_to_folder():
+
+    with Flow("Extract clippings from Kindle to files") as flow:
+
+        clippings_local = _extract_kindle_clippings()
+        clippings_by_book = (
+            _load_clippings_to_string(clippings_local) 
+            >> _transform_clippings_into_defaultdict 
+        )
+
+        _save_clippings_to_files(clippings_by_book)
+
+    return flow
+
 
 
 if __name__ == '__main__':
-    main()
+    # main()
+    flow = _etl_clippings_to_folder()
+
+    with raise_on_exception():
+        flow.run()
