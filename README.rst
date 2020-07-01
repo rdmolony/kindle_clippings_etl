@@ -19,4 +19,4 @@ Usage
 1. Plug your Kindle into your computer
 2. Download/Clone this directory
 3. Install dependencies: `pip install -r requirements.txt`
-4. Run: `python kindle.py`
+4. Run `python kindle.py` on the command line 
