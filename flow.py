@@ -1,7 +1,13 @@
 from pipeop import pipes
-from prefect import task
+from prefect import Flow
 from prefect.utilities.debug import raise_on_exception
 
+from tasks import (
+    _extract_kindle_clippings,
+    _load_clippings_to_string,
+    _transform_clippings_into_defaultdict,
+    _save_clippings_to_files,
+)
 
 @pipes
 def flow_etl_kindle_clippings_to_folder():
